@@ -24,6 +24,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
+    InlineQueryResultCachedVideo,
     InputTextMessageContent,
     Message,
     Sticker,
@@ -2522,37 +2523,77 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     settings = settings_for(user_id)
     source = LAST_SOURCE.get(user_id)
 
+    if source:
+        results = await _render_inline_result(context, user_id, source, settings, "last")
+        try:
+            await query.answer(results, cache_time=30, is_personal=True)
+        except TelegramError:
+            pass
+        return
+
     results = [
         InlineQueryResultArticle(
             id="help",
             title="🎞 Sticker Loop Bot",
-            description="Стикеры и emoji в красивые анимации с фоном",
+            description="Сначала отправь стикер в бота, затем возвращайся сюда",
             input_message_content=InputTextMessageContent(
-                "Отправь мне стикер или премиум emoji, и я сделаю из него анимированный loop с фоном!\n\n"
-                f"Сейчас: {settings.width}x{settings.height}, {settings.background_hex}, {output_format_label(settings.output_format)}",
+                f"Отправь стикер или emoji в @{(context.bot.username or 'StickerLoopBot')} чтобы получить анимацию"
             ),
-            thumb_url="https://via.placeholder.com/128/1a1a2e/ffffff?text=SL",
         )
     ]
-
-    if source:
-        results.append(
-            InlineQueryResultArticle(
-                id="render_last",
-                title="🔄 Повторить последний стикер",
-                description=f"{source.label} → {settings.width}x{settings.height}",
-                input_message_content=InputTextMessageContent(
-                    f"/start\n\nПересобираю {source.label} с твоими настройками...\nОткрой бота →",
-                    disable_web_page_preview=True,
-                ),
-                thumb_url="https://via.placeholder.com/128/1a1a2e/ffffff?text=R",
-            )
-        )
-
     try:
         await query.answer(results, cache_time=0, is_personal=True)
     except TelegramError:
-        logging.exception("Inline query answer failed")
+        pass
+
+
+async def _render_inline_result(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    source: SourceRef,
+    settings: RenderSettings,
+    cache_key: str,
+) -> list:
+    inline_settings = replace(settings, width=320, height=320, fps=15, output_format="gif")
+
+    try:
+        job_dir = Path(tempfile.mkdtemp(prefix="inline-", dir=RUNS_DIR))
+        source_path = await download_source(context, source, job_dir)
+        output = await asyncio.to_thread(render_source, source_path, job_dir, inline_settings, user_id)
+
+        with output.open("rb") as f:
+            sent = await context.bot.send_video(
+                chat_id=user_id,
+                video=f,
+                supports_streaming=True,
+                disable_notification=True,
+                read_timeout=60,
+                write_timeout=60,
+            )
+        file_id = sent.video.file_id
+        await sent.delete()
+
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+        return [
+            InlineQueryResultCachedVideo(
+                id=cache_key[:64],
+                video_file_id=file_id,
+                title=f"{settings.width}x{settings.height} | {source.label}",
+                description=f"{settings.background_hex} | {output_format_label(settings.output_format)}",
+            )
+        ]
+    except Exception:
+        logging.exception("Inline render failed for %s", source.label)
+
+    return [
+        InlineQueryResultArticle(
+            id="error",
+            title="❌ Не вышло",
+            description="Попробуй ещё раз в боте",
+            input_message_content=InputTextMessageContent("Не смог собрать. Попробуй в @StickerLoopBot"),
+        )
+    ]
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
