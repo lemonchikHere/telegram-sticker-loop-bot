@@ -717,9 +717,12 @@ async def _generate_section_preview_video(label: str, watermark: str, output: Pa
 async def _auto_generate_menu_assets(app: Application) -> None:
     try:
         sections = {
-            "bg": "Цвет фона\nВыбор и загрузка",
+            "bg": "Цвет фона\nВыбор HEX и загрузка фото",
             "resolution": "Разрешение\n640x360 • 30 FPS",
             "format": "Формат вывода\nGIF / Видео / Файл",
+            "item_color": "Цвет Emoji\nПерекраска стикеров",
+            "notes": "Заметки\nПодпись к результату",
+            "watermark": "Вотермарка\nТекст поверх видео",
         }
         wm = os.getenv("WATERMARK_TEXT", "StickerLoop")
         target_chat = log_chat_id()
@@ -2335,22 +2338,29 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
     if data == "menu:notes":
-        PENDING_ACTIONS[user_id] = pending_from_message("notes", query.message)
-        await edit_menu_message(
+        sent = await show_section_menu_message(
+            context,
             query.message,
             f"{tg_emoji('write', '✍')} <b>Введи заметку для подписи результата.</b>\n- чтобы очистить.",
             notes_keyboard(),
+            "notes",
         )
+        if sent:
+            PENDING_ACTIONS[user_id] = pending_from_message("notes", sent)
+        else:
+            PENDING_ACTIONS[user_id] = pending_from_message("notes", query.message)
         return
     if data == "notes:clear":
         current = update_settings(user_id, notes="")
         await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
         return
     if data == "menu:watermark":
-        await edit_menu_message(
+        await show_section_menu_message(
+            context,
             query.message,
             f"{tg_emoji('text', '🔡')} <b>Вотермарка для угла результата:</b>",
             watermark_keyboard(current),
+            "watermark",
         )
         return
     if data == "wm:toggle":
