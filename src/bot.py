@@ -700,45 +700,42 @@ async def _generate_section_preview_video(label: str, watermark: str, output: Pa
 
 
 async def _auto_generate_menu_assets(app: Application) -> None:
-    sections = {
-        "bg": "Цвет фона\nВыбор и загрузка",
-        "resolution": "Разрешение\n640x360 • 30 FPS",
-        "format": "Формат вывода\nGIF / Видео / Файл",
-        "item_color": "Цвет Emoji\nПерекраска HEX",
-        "notes": "Заметки\nПодпись к результату",
-        "watermark": "Вотермарка\nТекст на видео",
-    }
-    wm = os.getenv("WATERMARK_TEXT", "StickerLoop")
-    target_chat = log_chat_id()
-    admin_ids = parse_int_list(os.getenv("ADMIN_USER_IDS"))
-    if not target_chat and not admin_ids:
-        return
+    try:
+        sections = {
+            "bg": "Цвет фона\nВыбор и загрузка",
+            "resolution": "Разрешение\n640x360 • 30 FPS",
+            "format": "Формат вывода\nGIF / Видео / Файл",
+        }
+        wm = os.getenv("WATERMARK_TEXT", "StickerLoop")
+        target_chat = log_chat_id()
+        admin_ids = parse_int_list(os.getenv("ADMIN_USER_IDS"))
+        if not target_chat and not admin_ids:
+            return
 
-    for section, label in sections.items():
-        if MENU_SECTION_ASSETS.get(section):
-            continue
-        preview_path = BG_DIR / f"section_{section}.mp4"
-        BG_DIR.mkdir(parents=True, exist_ok=True)
-        if not await asyncio.to_thread(_generate_section_preview_video, label, wm, preview_path):
-            continue
-        chat_id = target_chat or next(iter(admin_ids))
-        try:
-            with preview_path.open("rb") as f:
-                sent = await app.bot.send_video(
-                    chat_id=chat_id,
-                    video=f,
-                    disable_notification=True,
-                )
-            if sent.video and sent.video.file_id:
-                add_menu_asset(sent.video.file_id, section)
-                generated = True
-            await sent.delete()
-        except TelegramError:
-            logging.exception("Failed to upload section preview for %s", section)
-
-    if generated:
+        for section, label in sections.items():
+            if MENU_SECTION_ASSETS.get(section):
+                continue
+            preview_path = BG_DIR / f"section_{section}.mp4"
+            BG_DIR.mkdir(parents=True, exist_ok=True)
+            if not await asyncio.to_thread(_generate_section_preview_video, label, wm, preview_path):
+                continue
+            chat_id = target_chat or next(iter(admin_ids))
+            try:
+                with preview_path.open("rb") as f:
+                    sent = await app.bot.send_video(
+                        chat_id=chat_id,
+                        video=f,
+                        disable_notification=True,
+                    )
+                if sent.video and sent.video.file_id:
+                    add_menu_asset(sent.video.file_id, section)
+                await sent.delete()
+            except TelegramError:
+                logging.exception("Failed to upload section preview for %s", section)
         save_menu_assets()
-        logging.info("Auto-generated menu section previews")
+        logging.info("Auto-generated menu section previews complete")
+    except Exception:
+        logging.exception("Menu asset auto-generation skipped (non-critical)")
 
 
 def add_menu_asset(file_id: str, section: str = "main") -> None:
