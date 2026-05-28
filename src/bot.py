@@ -964,6 +964,10 @@ async def _send_gradient_preview(
     c0 = current.background_hex
     c1 = current.gradient_end_hex
     direction = current.gradient_direction or "h"
+
+    if not c1:
+        _, c0, c1, direction = GRADIENT_PRESETS[0]
+
     cache_key = f"{c0}/{c1}/{direction}"
 
     if cache_key not in GRADIENT_PREVIEW_CACHE:
