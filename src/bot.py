@@ -987,9 +987,9 @@ async def _send_gradient_preview(
     dir_label = "↕ вертикаль" if direction == "v" else "↔ горизонталь"
 
     if preview_id:
-        await context.bot.send_animation(
+        await context.bot.send_photo(
             chat_id=chat_id,
-            animation=preview_id,
+            photo=preview_id,
             caption=f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} → {c1} ({dir_label})",
             reply_markup=gradient_menu_keyboard(current),
             parse_mode=ParseMode.HTML,
