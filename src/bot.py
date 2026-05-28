@@ -197,6 +197,12 @@ MENU_SECTION_ASSETS: dict[str, list[str]] = {}
 MENU_ASSET_SECTIONS = {
     "main": "главное меню",
     "palette": "палитра",
+    "bg": "фон",
+    "resolution": "разрешение",
+    "format": "формат",
+    "item_color": "цвет emoji",
+    "notes": "заметки",
+    "watermark": "вотермарка",
 }
 
 
@@ -668,6 +674,73 @@ def menu_asset_for(section: str | None = None) -> str | None:
     return None
 
 
+async def _generate_section_preview_video(label: str, watermark: str, output: Path) -> bool:
+    lines = label.split("\n")
+    main_text = lines[0]
+    sub_text = lines[1] if len(lines) > 1 else ""
+    subtitle = f":drawtext=text='{sub_text}':fontcolor=gray@0.6:fontsize=18:x=(w-tw)/2:y=(h/2)+30" if sub_text else ""
+    try:
+        run_command([
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i",
+            f"color=c=black:s=512x288:r=5:d=1.5",
+            "-vf",
+            f"drawtext=text='{main_text}':fontcolor=white:fontsize=28:x=(w-tw)/2:y=(h/2)-20"
+            f"{subtitle}"
+            f",drawtext=text='{watermark}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10"
+            f",fade=in:0:10",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-t", "1.5",
+            str(output),
+        ], cwd=ROOT)
+        return True
+    except Exception:
+        logging.exception("Failed to generate section preview for %s", label)
+        return False
+
+
+async def _auto_generate_menu_assets(app: Application) -> None:
+    sections = {
+        "bg": "Цвет фона\nВыбор и загрузка",
+        "resolution": "Разрешение\n640x360 • 30 FPS",
+        "format": "Формат вывода\nGIF / Видео / Файл",
+        "item_color": "Цвет Emoji\nПерекраска HEX",
+        "notes": "Заметки\nПодпись к результату",
+        "watermark": "Вотермарка\nТекст на видео",
+    }
+    wm = os.getenv("WATERMARK_TEXT", "StickerLoop")
+    target_chat = log_chat_id()
+    admin_ids = parse_int_list(os.getenv("ADMIN_USER_IDS"))
+    if not target_chat and not admin_ids:
+        return
+
+    for section, label in sections.items():
+        if MENU_SECTION_ASSETS.get(section):
+            continue
+        preview_path = BG_DIR / f"section_{section}.mp4"
+        BG_DIR.mkdir(parents=True, exist_ok=True)
+        if not await asyncio.to_thread(_generate_section_preview_video, label, wm, preview_path):
+            continue
+        chat_id = target_chat or next(iter(admin_ids))
+        try:
+            with preview_path.open("rb") as f:
+                sent = await app.bot.send_video(
+                    chat_id=chat_id,
+                    video=f,
+                    disable_notification=True,
+                )
+            if sent.video and sent.video.file_id:
+                add_menu_asset(sent.video.file_id, section)
+                generated = True
+            await sent.delete()
+        except TelegramError:
+            logging.exception("Failed to upload section preview for %s", section)
+
+    if generated:
+        save_menu_assets()
+        logging.info("Auto-generated menu section previews")
+
+
 def add_menu_asset(file_id: str, section: str = "main") -> None:
     section = normalize_menu_asset_section(section)
     assets = MENU_ASSETS if section == "main" else MENU_SECTION_ASSETS.setdefault(section, [])
@@ -863,14 +936,14 @@ def settings_summary(settings: RenderSettings) -> str:
         f"{tg_emoji('bot', '🤖')} <b>Создан для оформления ботов и сайтов</b>\n\n"
         f"{tg_emoji('send', '⬆')} <b>Отправь мне:</b>\n"
         "прем emoji, custom emoji, sticker, фото/видео или ссылку на pack\n\n"
-        f"{tg_emoji('settings', '⚙')} <b>Конфигурация:</b>\n"
-        f"{tg_emoji('brush', '🖌')} <b>Цвет фона:</b> {settings.background_hex}"
+        f"<blockquote>{tg_emoji('settings', '⚙')} <b>Настройки:</b>\n"
+        f"{tg_emoji('brush', '🖌')} <b>Фон:</b> {settings.background_hex}"
         f"{f' → {settings.gradient_end_hex}' if settings.gradient_end_hex else ''}\n"
         f"{tg_emoji('resolution', '↔')} <b>Разрешение:</b> {settings.width}x{settings.height} {settings.fps} FPS\n"
         f"{tg_emoji('file', '📁')} <b>Формат:</b> {output_format_label(settings.output_format)}\n"
         f"{tg_emoji('brush', '🖌')} <b>ЦветEmoji:</b> {item_color}\n"
         f"{tg_emoji('write', '✍')} <b>Заметки:</b> {notes}\n"
-        f"{tg_emoji('text', '🔡')} <b>Вотермарка:</b> {watermark}"
+        f"{tg_emoji('text', '🔡')} <b>Вотермарка:</b> {watermark}</blockquote>"
     )
 
 
@@ -2158,11 +2231,13 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await _send_gradient_preview(context, query.message.chat_id, current, message_id=query.message.message_id)
         return
     if data == "menu:resolution":
-        await edit_menu_message(
+        await show_section_menu_message(
+            context,
             query.message,
             f"{tg_emoji('resolution', '↔')} <b>Выбери разрешение:</b>\n"
             f"Сейчас: {current.width}x{current.height} {current.fps} FPS",
             resolution_menu_keyboard(current),
+            "resolution",
         )
         return
     if data == "menu:res_custom":
@@ -2183,10 +2258,12 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
         return
     if data == "menu:format":
-        await edit_menu_message(
+        await show_section_menu_message(
+            context,
             query.message,
             f"{tg_emoji('file', '📁')} <b>Выбери формат вывода:</b>",
             format_menu_keyboard(current.output_format),
+            "format",
         )
         return
     if data.startswith("fmt:"):
@@ -2784,6 +2861,8 @@ async def post_init(app: Application) -> None:
             f"set_my_commands:admin:{admin_id}",
             app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id)),
         )
+
+    await _auto_generate_menu_assets(app)
 
 
 def build_app(token: str) -> Application:
