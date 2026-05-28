@@ -674,7 +674,9 @@ def menu_asset_for(section: str | None = None) -> str | None:
     return None
 
 
-async def _generate_section_preview_video(label: str, watermark: str, output: Path) -> bool:
+async def _generate_section_preview_video(
+    label: str, watermark: str, emoji_id: str | None, output: Path, app: Application
+) -> bool:
     lines = label.split("\n")
     main_text = lines[0]
     sub_text = lines[1] if len(lines) > 1 else ""
@@ -714,15 +716,62 @@ async def _generate_section_preview_video(label: str, watermark: str, output: Pa
                 f.unlink(missing_ok=True)
 
 
+async def _composite_emoji_onto_video(
+    app: Application, emoji_id: str, bg_video: Path, output: Path,
+) -> bool:
+    """Overlay premium emoji sticker onto the section preview video."""
+    try:
+        stickers = await app.bot.get_custom_emoji_stickers([emoji_id])
+        if not stickers:
+            return False
+        emoji = stickers[0]
+        emoji_file = await app.bot.get_file(emoji.file_id)
+        emoji_path = BG_DIR / f"emoji_{emoji_id}"
+        await emoji_file.download_to_drive(emoji_path)
+
+        kind = detect_kind(emoji_path)
+        frames_dir = BG_DIR / f"emoji_frames_{emoji_id}"
+        if kind == "tgs":
+            node = shutil.which("node")
+            if not node:
+                return False
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            run_command([
+                node, str(ROOT / "src" / "render_lottie.mjs"),
+                "--input", str(emoji_path),
+                "--out-dir", str(frames_dir),
+                "--width", "128", "--height", "128",
+                "--fps", "5", "--max-seconds", "1.5",
+            ], cwd=ROOT)
+            frame_pattern = frames_dir / "frame_%05d.png"
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(bg_video),
+                "-framerate", "5",
+                "-i", str(frame_pattern),
+                "-filter_complex",
+                f"[1:v]scale=100:100:force_original_aspect_ratio=decrease[emoji];"
+                f"[0:v][emoji]overlay=(W-w)/2:(H/2)-120:shortest=1",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-t", "1.5",
+                str(output),
+            ]
+            run_command(cmd)
+            return True
+    except Exception:
+        logging.exception("Failed to composite emoji %s", emoji_id)
+    return False
+
+
 async def _auto_generate_menu_assets(app: Application) -> None:
     try:
-        sections = {
-            "bg": "Цвет фона\nВыбор HEX и загрузка фото",
-            "resolution": "Разрешение\n640x360 • 30 FPS",
-            "format": "Формат вывода\nGIF / Видео / Файл",
-            "item_color": "Цвет Emoji\nПерекраска стикеров",
-            "notes": "Заметки\nПодпись к результату",
-            "watermark": "Вотермарка\nТекст поверх видео",
+        section_emojis = {
+            "bg": ("Цвет фона\nВыбор HEX и загрузка фото", "brush"),
+            "resolution": ("Разрешение\n640x360 • 30 FPS", "resolution"),
+            "format": ("Формат вывода\nGIF / Видео / Файл", "file"),
+            "item_color": ("Цвет Emoji\nПерекраска стикеров", "brush"),
+            "notes": ("Заметки\nПодпись к результату", "write"),
+            "watermark": ("Вотермарка\nТекст поверх видео", "text"),
         }
         wm = os.getenv("WATERMARK_TEXT", "StickerLoop")
         target_chat = log_chat_id()
@@ -730,13 +779,20 @@ async def _auto_generate_menu_assets(app: Application) -> None:
         if not target_chat and not admin_ids:
             return
 
-        for section, label in sections.items():
+        for section, (label, emoji_key) in section_emojis.items():
             if MENU_SECTION_ASSETS.get(section):
                 continue
             preview_path = BG_DIR / f"section_{section}.mp4"
+            final_path = BG_DIR / f"section_{section}_final.mp4"
             BG_DIR.mkdir(parents=True, exist_ok=True)
-            if not await _generate_section_preview_video(label, wm, preview_path):
+            if not await _generate_section_preview_video(label, wm, None, preview_path, app):
                 continue
+
+            emoji_id = PREMIUM_EMOJI.get(emoji_key)
+            if emoji_id:
+                if await _composite_emoji_onto_video(app, emoji_id, preview_path, final_path):
+                    preview_path = final_path
+
             chat_id = target_chat or next(iter(admin_ids))
             try:
                 with preview_path.open("rb") as f:
