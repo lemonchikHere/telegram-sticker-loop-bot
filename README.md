@@ -19,6 +19,8 @@ Send a sticker, get back a buttery MP4 that Telegram renders as a GIF. Animated 
 
 Send a sticker → get back a looping MP4.
 
+**[Try it live: @StickerLoopBot](https://t.me/StickerLoopBot)**
+
 ![demo](docs/demo.gif)
 
 Chat interface:
