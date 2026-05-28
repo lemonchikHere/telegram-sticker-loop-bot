@@ -406,20 +406,29 @@ def known_user_ids() -> list[int]:
 
 
 def user_stats() -> dict[str, int]:
+    now = int(time.time())
+    week_ago = now - 604800
     with db_connect() as conn:
         row = conn.execute(
             """
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN blocked_at IS NULL THEN 1 ELSE 0 END) AS reachable,
-                SUM(render_count) AS renders
+                SUM(render_count) AS renders,
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END) AS new_week,
+                SUM(CASE WHEN last_seen >= ? AND render_count > 0 THEN 1 ELSE 0 END) AS active_week,
+                SUM(CASE WHEN last_seen >= ? AND render_count > 0 THEN render_count ELSE 0 END) AS renders_week
             FROM users
-            """
+            """,
+            (week_ago, week_ago, week_ago),
         ).fetchone()
     return {
         "total": int(row["total"] or 0),
         "reachable": int(row["reachable"] or 0),
         "renders": int(row["renders"] or 0),
+        "new_week": int(row["new_week"] or 0),
+        "active_week": int(row["active_week"] or 0),
+        "renders_week": int(row["renders_week"] or 0),
     }
 
 
@@ -482,7 +491,7 @@ async def remember_user(
     if is_new and env_bool("LOG_NEW_USERS", True):
         await log_to_owner_chat(
             context,
-            "New bot user\n"
+            "👤 New user\n"
             f"user: {user_display(user)}\n"
             f"language: {user.language_code or '-'}\n"
             f"action: {action}",
@@ -490,7 +499,7 @@ async def remember_user(
     if render_started and env_bool("LOG_RENDER_REQUESTS", True):
         await log_to_owner_chat(
             context,
-            "Render request\n"
+            "🎞 Render request\n"
             f"user: {user_display(user)}\n"
             f"action: {action}\n"
             f"source: {source_label or '-'}",
@@ -1502,6 +1511,15 @@ async def process_source(
         source_path = await download_source(context, source, job_dir)
         output = await asyncio.to_thread(render_source, source_path, job_dir, settings)
         elapsed = time.time() - started
+        if env_bool("LOG_RENDER_REQUESTS", True) and message.from_user:
+            await log_to_owner_chat(
+                context,
+                "✅ Render done\n"
+                f"user: {user_display(message.from_user)}\n"
+                f"source: {source.label}\n"
+                f"settings: {settings.width}x{settings.height} {settings.background_hex} {output_format_label(settings.output_format)}\n"
+                f"elapsed: {elapsed:.1f}s",
+            )
         caption = (
             f"Готово: {settings.width}x{settings.height}, "
             f"{settings.background_hex}, {output_format_label(settings.output_format)}, {elapsed:.1f}s"
@@ -1577,14 +1595,15 @@ async def limits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await remember_user(update, context, "limits")
     config = safety_config()
     await update.message.reply_text(
-        "Лимиты:\n"
+        "⚙ <b>Лимиты</b>\n"
         f"- одновременно рендерится максимум {config.max_global_renders} "
         f"(сейчас активно {get_render_gate().active})\n"
         "- у одного пользователя максимум 1 активная задача\n"
         f"- не больше {config.per_user_window_jobs} рендеров за "
         f"{format_duration(config.per_user_window_seconds)}\n"
         f"- спам-пауза: {format_duration(config.ban_seconds)}\n"
-        f"- таймаут рендера: {format_duration(config.render_timeout_seconds)}"
+        f"- таймаут рендера: {format_duration(config.render_timeout_seconds)}",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -1596,10 +1615,15 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     stats = await asyncio.to_thread(user_stats)
     await update.message.reply_text(
-        "Пользователи:\n"
-        f"всего: {stats['total']}\n"
-        f"доступны для рассылки: {stats['reachable']}\n"
-        f"рендеров: {stats['renders']}"
+        "📊 <b>Статистика</b>\n\n"
+        f"👥 Всего пользователей: {stats['total']}\n"
+        f"📬 Доступны для рассылки: {stats['reachable']}\n"
+        f"🎞 Всего рендеров: {stats['renders']}\n\n"
+        "📅 <b>За неделю</b>\n"
+        f"🆕 Новых: {stats['new_week']}\n"
+        f"🚀 Активных: {stats['active_week']}\n"
+        f"🎞 Рендеров: {stats['renders_week']}",
+        parse_mode=ParseMode.HTML,
     )
 
 
