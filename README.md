@@ -10,7 +10,6 @@ Send a sticker, get back a buttery MP4 that Telegram renders as a GIF. Animated 
 [![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-22.5-2CA5E0?logo=telegram&logoColor=white)](https://github.com/python-telegram-bot/python-telegram-bot)
 [![Node](https://img.shields.io/badge/node-lottie%20render-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/lemonchikHere/telegram-sticker-loop-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/lemonchikHere/telegram-sticker-loop-bot/actions/workflows/ci.yml)
 
 </div>
 
