@@ -23,6 +23,8 @@ from telegram import (
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
     Message,
     Sticker,
     Update,
@@ -35,6 +37,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    InlineQueryHandler,
     MessageHandler,
     filters,
 )
@@ -78,12 +81,25 @@ ITEM_COLOR_PRESETS = {
     "orange": ("Оранж", "#ff9800"),
 }
 
+GRADIENT_PRESETS = [
+    ("Закат", "#ff512f", "#dd2476", "h"),
+    ("Океан", "#2193b0", "#6dd5ed", "h"),
+    ("Лес", "#11998e", "#38ef7d", "h"),
+    ("Фиолет", "#8e2de2", "#4a00e0", "h"),
+    ("Неон", "#f857a6", "#ff5858", "h"),
+    ("Ночь", "#0f0c29", "#302b63", "v"),
+    ("Мята", "#00b4db", "#0083b0", "h"),
+    ("Лава", "#cb2d3e", "#ef3b3c", "h"),
+]
+
 
 
 @dataclass(frozen=True)
 class RenderSettings:
     background_key: str
     background_hex: str
+    gradient_end_hex: str | None
+    gradient_direction: str | None
     width: int
     height: int
     sticker_size: int
@@ -275,6 +291,8 @@ def default_settings() -> RenderSettings:
     return RenderSettings(
         background_key=key if key in BACKGROUND_PRESETS else label.lower(),
         background_hex=color,
+        gradient_end_hex=None,
+        gradient_direction=None,
         width=env_int("OUTPUT_WIDTH", 640),
         height=env_int("OUTPUT_HEIGHT", 360),
         sticker_size=env_int("STICKER_SIZE", 220),
@@ -897,8 +915,20 @@ def background_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         )
     if has_custom:
         rows.append([menu_button("🖼 Сбросить на цвет", f"setbgimg:reset:{current_settings.background_key}", "delete")])
+    rows.append([menu_button("🌈 Градиент", "menu:gradient", "brush")])
     rows.append([menu_button("🖼 Загрузить свой фон", "menu:bg_upload", "media")])
     rows.append([menu_button("Назад", "menu:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def gradient_menu_keyboard(current: RenderSettings) -> InlineKeyboardMarkup:
+    dir_label = {"h": "↔ горизонталь", "v": "↕ вертикаль"}
+    rows = []
+    for name, c0, c1, direction in GRADIENT_PRESETS:
+        active = current.gradient_end_hex == c1 and current.background_hex == c0
+        prefix = "✓ " if active else ""
+        rows.append([menu_button(f"{prefix}{name} {dir_label.get(direction, '')}", f"setgradient:{direction}/{c0}/{c1}", "brush")])
+    rows.append([menu_button("Назад", "menu:bg")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1279,7 +1309,7 @@ def sticker_filter(settings: RenderSettings) -> str:
     return base
 
 
-def compose_filter(settings: RenderSettings, image_bg: bool = False) -> str:
+def compose_filter(settings: RenderSettings, image_bg: bool = False, gradient_vf: str = "") -> str:
     watermark = watermark_drawtext_filter(settings)
     bg_chain = (
         f"[1:v]scale={settings.width}:{settings.height}:force_original_aspect_ratio=increase,"
@@ -1287,7 +1317,9 @@ def compose_filter(settings: RenderSettings, image_bg: bool = False) -> str:
         if image_bg
         else ""
     )
-    bg_label = "bg" if image_bg else "1:v"
+    if gradient_vf and not image_bg:
+        bg_chain = f"[1:v]{gradient_vf}[bg];"
+    bg_label = "bg" if (image_bg or gradient_vf) else "1:v"
     return (
         f"{bg_chain}"
         f"[0:v]{sticker_filter(settings)}[st];"
@@ -1296,13 +1328,30 @@ def compose_filter(settings: RenderSettings, image_bg: bool = False) -> str:
     )
 
 
-def _make_bg_args(settings: RenderSettings, user_id: int, duration: float) -> tuple[list[str], bool]:
-    """Returns (ffmpeg_args, is_image_bg)"""
+def _make_bg_args(settings: RenderSettings, user_id: int, duration: float) -> tuple[list[str], bool, str]:
+    """Returns (ffmpeg_args, is_image_bg, extra_vf)"""
     bg_path = USER_BG_IMAGES.get(user_id)
     if bg_path and bg_path.exists():
-        return (["-loop", "1", "-i", str(bg_path)], True)
+        return (["-loop", "1", "-i", str(bg_path)], True, "")
+
+    if settings.gradient_end_hex:
+        c0 = settings.background_hex.lstrip("#")
+        c1 = settings.gradient_end_hex.lstrip("#")
+        dr_r = int(c1[0:2], 16) - int(c0[0:2], 16)
+        dr_g = int(c1[2:4], 16) - int(c0[2:4], 16)
+        dr_b = int(c1[4:6], 16) - int(c0[4:6], 16)
+        axis = "Y" if settings.gradient_direction == "v" else "X"
+        dim = "H" if settings.gradient_direction == "v" else "W"
+        geq = (
+            f"geq=r='r({axis},Y)+floor({dr_r}*{axis}/{dim})':"
+            f"g='g({axis},Y)+floor({dr_g}*{axis}/{dim})':"
+            f"b='b({axis},Y)+floor({dr_b}*{axis}/{dim})'"
+        )
+        color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
+        return (["-f", "lavfi", "-i", color], False, f",{geq}")
+
     color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
-    return (["-f", "lavfi", "-i", color], False)
+    return (["-f", "lavfi", "-i", color], False, "")
 
 
 def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettings, user_id: int) -> None:
@@ -1333,13 +1382,7 @@ def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettin
     duration = max(0.2, min(float(manifest["duration"]), 6.0))
     frame_pattern = frames_dir / "frame_%05d.png"
 
-    bg_path = USER_BG_IMAGES.get(user_id)
-    image_bg = bg_path is not None and bg_path.exists()
-    if image_bg:
-        bg_input = ["-loop", "1", "-i", str(bg_path)]
-    else:
-        bg_input = ["-f", "lavfi", "-i",
-                     f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"]
+    bg_args, image_bg, gradient_vf = _make_bg_args(settings, user_id, duration)
 
     cmd = [
         "ffmpeg",
@@ -1348,9 +1391,9 @@ def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettin
         str(settings.fps),
         "-i",
         str(frame_pattern),
-        *bg_input,
+        *bg_args,
         "-filter_complex",
-        compose_filter(settings, image_bg=image_bg),
+        compose_filter(settings, image_bg=image_bg, gradient_vf=gradient_vf),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1360,7 +1403,7 @@ def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettin
 
 def render_webm(source: Path, output: Path, settings: RenderSettings, user_id: int) -> None:
     duration = ffprobe_duration(source) or 3.0
-    bg_args, image_bg = _make_bg_args(settings, user_id, duration)
+    bg_args, image_bg, gradient_vf = _make_bg_args(settings, user_id, duration)
     cmd = [
         "ffmpeg",
         "-y",
@@ -1372,7 +1415,7 @@ def render_webm(source: Path, output: Path, settings: RenderSettings, user_id: i
         str(source),
         *bg_args,
         "-filter_complex",
-        compose_filter(settings, image_bg=image_bg),
+        compose_filter(settings, image_bg=image_bg, gradient_vf=gradient_vf),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1382,7 +1425,7 @@ def render_webm(source: Path, output: Path, settings: RenderSettings, user_id: i
 
 def render_video(source: Path, output: Path, settings: RenderSettings, user_id: int) -> None:
     duration = ffprobe_duration(source) or 3.0
-    bg_args, image_bg = _make_bg_args(settings, user_id, duration)
+    bg_args, image_bg, gradient_vf = _make_bg_args(settings, user_id, duration)
     cmd = [
         "ffmpeg",
         "-y",
@@ -1394,7 +1437,7 @@ def render_video(source: Path, output: Path, settings: RenderSettings, user_id: 
         str(source),
         *bg_args,
         "-filter_complex",
-        compose_filter(settings, image_bg=image_bg),
+        compose_filter(settings, image_bg=image_bg, gradient_vf=gradient_vf),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1404,7 +1447,7 @@ def render_video(source: Path, output: Path, settings: RenderSettings, user_id: 
 
 def render_image(source: Path, output: Path, settings: RenderSettings, user_id: int) -> None:
     duration = max(0.5, min(settings.static_seconds, 6.0))
-    bg_args, image_bg = _make_bg_args(settings, user_id, duration)
+    bg_args, image_bg, gradient_vf = _make_bg_args(settings, user_id, duration)
     cmd = [
         "ffmpeg",
         "-y",
@@ -1416,7 +1459,7 @@ def render_image(source: Path, output: Path, settings: RenderSettings, user_id: 
         str(source),
         *bg_args,
         "-filter_complex",
-        compose_filter(settings, image_bg=image_bg),
+        compose_filter(settings, image_bg=image_bg, gradient_vf=gradient_vf),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1996,8 +2039,26 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         key = data.removeprefix("setbg:")
         if key in BACKGROUND_PRESETS:
             name, color = BACKGROUND_PRESETS[key]
-            current = update_settings(user_id, background_key=key, background_hex=color)
+            current = update_settings(user_id, background_key=key, background_hex=color, gradient_end_hex=None, gradient_direction=None)
             await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
+        return
+    if data == "menu:gradient":
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>",
+            gradient_menu_keyboard(current),
+        )
+        return
+    if data.startswith("setgradient:"):
+        parts = data.removeprefix("setgradient:").split("/", 2)
+        if len(parts) == 3:
+            direction, c0, c1 = parts
+            current = update_settings(user_id, background_key="gradient", background_hex=c0, gradient_end_hex=c1, gradient_direction=direction)
+            await edit_menu_message(
+                query.message,
+                f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>\n✓ {c0} → {c1}",
+                gradient_menu_keyboard(current),
+            )
         return
     if data == "menu:resolution":
         await edit_menu_message(
@@ -2452,6 +2513,48 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.inline_query
+    if not query or not query.from_user:
+        return
+
+    user_id = query.from_user.id
+    settings = settings_for(user_id)
+    source = LAST_SOURCE.get(user_id)
+
+    results = [
+        InlineQueryResultArticle(
+            id="help",
+            title="🎞 Sticker Loop Bot",
+            description="Стикеры и emoji в красивые анимации с фоном",
+            input_message_content=InputTextMessageContent(
+                "Отправь мне стикер или премиум emoji, и я сделаю из него анимированный loop с фоном!\n\n"
+                f"Сейчас: {settings.width}x{settings.height}, {settings.background_hex}, {output_format_label(settings.output_format)}",
+            ),
+            thumb_url="https://via.placeholder.com/128/1a1a2e/ffffff?text=SL",
+        )
+    ]
+
+    if source:
+        results.append(
+            InlineQueryResultArticle(
+                id="render_last",
+                title="🔄 Повторить последний стикер",
+                description=f"{source.label} → {settings.width}x{settings.height}",
+                input_message_content=InputTextMessageContent(
+                    f"/start\n\nПересобираю {source.label} с твоими настройками...\nОткрой бота →",
+                    disable_web_page_preview=True,
+                ),
+                thumb_url="https://via.placeholder.com/128/1a1a2e/ffffff?text=R",
+            )
+        )
+
+    try:
+        await query.answer(results, cache_time=0, is_personal=True)
+    except TelegramError:
+        logging.exception("Inline query answer failed")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
         logging.critical(
@@ -2561,6 +2664,7 @@ def main() -> None:
         raise SystemExit("ffmpeg and ffprobe are required.")
 
     app = build_app(token)
+    app.add_handler(InlineQueryHandler(on_inline_query))
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler(["settings", "menu"], settings))
     app.add_handler(CommandHandler("limits", limits))
@@ -2573,7 +2677,7 @@ def main() -> None:
     app.add_handler(CommandHandler("broadcast_cancel", broadcast_cancel))
     app.add_handler(CommandHandler("bg", bg))
     app.add_handler(
-        CallbackQueryHandler(on_menu_callback, pattern=r"^(menu:|fmt:|setbg:|setres:|setcolor:|itemcolor:|notes:|wm:)")
+        CallbackQueryHandler(on_menu_callback, pattern=r"^(menu:|fmt:|setbg:|setres:|setcolor:|setgradient:|itemcolor:|notes:|wm:|setbgimg:|res:)")
     )
     app.add_handler(CallbackQueryHandler(on_background_callback, pattern=r"^bg:"))
     app.add_handler(MessageHandler(filters.Sticker.ALL, on_sticker))
@@ -2581,8 +2685,24 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(error_handler)
 
-    logging.info("Sticker loop bot is running with polling")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    webhook_url = os.getenv("WEBHOOK_URL", "").strip()
+    if webhook_url:
+        webhook_path = os.getenv("WEBHOOK_PATH", "/webhook")
+        webhook_port = env_int("WEBHOOK_PORT", 8000)
+        webhook_secret = os.getenv("WEBHOOK_SECRET", secrets.token_hex(16))
+        logging.info("Running with webhook on %s%s", webhook_url, webhook_path)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=webhook_port,
+            url_path=webhook_path,
+            secret_token=webhook_secret,
+            webhook_url=f"{webhook_url}{webhook_path}",
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
+    else:
+        logging.info("Sticker loop bot is running with polling")
+        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
