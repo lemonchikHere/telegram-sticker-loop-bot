@@ -58,6 +58,15 @@ BACKGROUND_PRESETS = {
     "green": ("Green", "#052e2b"),
 }
 
+RESOLUTION_PRESETS = {
+    "512x512": (512, 512, 30),
+    "640x360": (640, 360, 30),
+    "1280x720": (1280, 720, 30),
+    "1920x1080": (1920, 1080, 30),
+    "1920x600": (1920, 600, 30),
+}
+
+
 
 @dataclass(frozen=True)
 class RenderSettings:
@@ -877,6 +886,27 @@ def format_menu_keyboard(current: str) -> InlineKeyboardMarkup:
             [menu_button("Назад", "menu:main")],
         ]
     )
+
+
+def resolution_menu_keyboard(current: RenderSettings) -> InlineKeyboardMarkup:
+    def label(key: str) -> str:
+        w, h, fps = RESOLUTION_PRESETS[key]
+        mark = "✓ " if current.width == w and current.height == h and current.fps == fps else ""
+        return f"{mark}{key}"
+
+    rows = []
+    items = list(RESOLUTION_PRESETS.items())
+    for index in range(0, len(items), 2):
+        rows.append(
+            [
+                menu_button(label(key), f"setres:{key}")
+                for key, _ in items[index:index + 2]
+            ]
+        )
+    rows.append([menu_button("Свой размер…", "menu:res_custom")])
+    rows.append([menu_button("Назад", "menu:main")])
+    return InlineKeyboardMarkup(rows)
+
 
 
 def item_color_keyboard() -> InlineKeyboardMarkup:
@@ -1889,14 +1919,29 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
         return
     if data == "menu:resolution":
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('resolution', '↔')} <b>Выбери разрешение:</b>\n"
+            f"Сейчас: {current.width}x{current.height} {current.fps} FPS",
+            resolution_menu_keyboard(current),
+        )
+        return
+    if data == "menu:res_custom":
         PENDING_ACTIONS[user_id] = pending_from_message("resolution", query.message)
         await edit_menu_message(
             query.message,
-            f"{tg_emoji('resolution', '↔')} <b>Введи новое разрешение:</b>\n"
+            f"{tg_emoji('resolution', '↔')} <b>Введи своё разрешение:</b>\n"
             "1920x600 или 1920x530 60fps\n2.35:1 или 16:9 или 1:1\n\n"
             f"<b>Сейчас:</b> {current.width}x{current.height} {current.fps} FPS",
             back_keyboard(),
         )
+        return
+    if data.startswith("setres:"):
+        key = data.removeprefix("setres:")
+        if key in RESOLUTION_PRESETS:
+            w, h, fps = RESOLUTION_PRESETS[key]
+            current = update_settings(user_id, width=w, height=h, fps=fps)
+            await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
         return
     if data == "menu:format":
         await edit_menu_message(
