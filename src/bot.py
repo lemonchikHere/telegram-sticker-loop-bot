@@ -678,17 +678,28 @@ async def _generate_section_preview_video(label: str, watermark: str, output: Pa
     lines = label.split("\n")
     main_text = lines[0]
     sub_text = lines[1] if len(lines) > 1 else ""
-    subtitle = f":drawtext=text='{sub_text}':fontcolor=gray@0.6:fontsize=18:x=(w-tw)/2:y=(h/2)+30" if sub_text else ""
+
+    text_file = output.with_suffix(".txt")
+    wm_file = output.with_suffix(".wm.txt")
+    sub_file = output.with_suffix(".sub.txt")
+    text_file.write_text(main_text, encoding="utf-8")
+    wm_file.write_text(watermark, encoding="utf-8")
+
+    vf_parts = [
+        f"drawtext=textfile='{text_file}':fontcolor=white:fontsize=28:x=(w-tw)/2:y=(h/2)-20",
+    ]
+    if sub_text:
+        sub_file.write_text(sub_text, encoding="utf-8")
+        vf_parts.append(f"drawtext=textfile='{sub_file}':fontcolor=gray@0.6:fontsize=18:x=(w-tw)/2:y=(h/2)+30")
+    vf_parts.append(f"drawtext=textfile='{wm_file}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10")
+    vf_parts.append("fade=in:0:10")
+
     try:
         run_command([
             "ffmpeg", "-y",
             "-f", "lavfi", "-i",
             f"color=c=black:s=512x288:r=5:d=1.5",
-            "-vf",
-            f"drawtext=text='{main_text}':fontcolor=white:fontsize=28:x=(w-tw)/2:y=(h/2)-20"
-            f"{subtitle}"
-            f",drawtext=text='{watermark}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10"
-            f",fade=in:0:10",
+            "-vf", ",".join(vf_parts),
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-t", "1.5",
             str(output),
@@ -697,6 +708,10 @@ async def _generate_section_preview_video(label: str, watermark: str, output: Pa
     except Exception:
         logging.exception("Failed to generate section preview for %s", label)
         return False
+    finally:
+        for f in (text_file, wm_file, sub_file):
+            if f.exists():
+                f.unlink(missing_ok=True)
 
 
 async def _auto_generate_menu_assets(app: Application) -> None:
