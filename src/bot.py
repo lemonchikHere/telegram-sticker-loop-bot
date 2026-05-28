@@ -717,7 +717,7 @@ async def _auto_generate_menu_assets(app: Application) -> None:
                 continue
             preview_path = BG_DIR / f"section_{section}.mp4"
             BG_DIR.mkdir(parents=True, exist_ok=True)
-            if not await asyncio.to_thread(_generate_section_preview_video, label, wm, preview_path):
+            if not await _generate_section_preview_video(label, wm, preview_path):
                 continue
             chat_id = target_chat or next(iter(admin_ids))
             try:
