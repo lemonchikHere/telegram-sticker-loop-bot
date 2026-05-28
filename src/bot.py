@@ -43,6 +43,7 @@ from telegram.ext import (
 ROOT = Path(__file__).resolve().parents[1]
 VAR_DIR = ROOT / "var"
 RUNS_DIR = VAR_DIR / "runs"
+BG_DIR = VAR_DIR / "backgrounds"
 LOG_DIR = ROOT / "logs"
 ENV_PATH = ROOT / ".env"
 LIMITS_STATE_PATH = VAR_DIR / "limits.json"
@@ -164,6 +165,7 @@ class RenderGate:
 
 
 USER_SETTINGS: dict[int, RenderSettings] = {}
+USER_BG_IMAGES: dict[int, Path] = {}
 LAST_SOURCE: dict[int, SourceRef] = {}
 PENDING_ACTIONS: dict[int, PendingAction] = {}
 BUSY: set[int] = set()
@@ -870,6 +872,9 @@ def main_menu_keyboard(settings: RenderSettings) -> InlineKeyboardMarkup:
                 menu_button("Вотермарка", "menu:watermark", "text"),
                 menu_button("Предпросмотр", "menu:preview", "eye"),
             ],
+            [
+                menu_button("Сбросить всё", "menu:reset", "delete"),
+            ],
         ]
     )
 
@@ -878,7 +883,9 @@ def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[menu_button("Назад", "menu:main")]])
 
 
-def background_menu_keyboard() -> InlineKeyboardMarkup:
+def background_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    has_custom = user_id in USER_BG_IMAGES
+    current_settings = settings_for(user_id)
     rows = []
     items = list(BACKGROUND_PRESETS.items())
     for index in range(0, len(items), 2):
@@ -888,6 +895,9 @@ def background_menu_keyboard() -> InlineKeyboardMarkup:
                 for key, (name, color) in items[index:index + 2]
             ]
         )
+    if has_custom:
+        rows.append([menu_button("🖼 Сбросить на цвет", f"setbgimg:reset:{current_settings.background_key}", "delete")])
+    rows.append([menu_button("🖼 Загрузить свой фон", "menu:bg_upload", "media")])
     rows.append([menu_button("Назад", "menu:main")])
     return InlineKeyboardMarkup(rows)
 
@@ -1269,16 +1279,33 @@ def sticker_filter(settings: RenderSettings) -> str:
     return base
 
 
-def compose_filter(settings: RenderSettings) -> str:
+def compose_filter(settings: RenderSettings, image_bg: bool = False) -> str:
     watermark = watermark_drawtext_filter(settings)
+    bg_chain = (
+        f"[1:v]scale={settings.width}:{settings.height}:force_original_aspect_ratio=increase,"
+        f"crop={settings.width}:{settings.height},fps={settings.fps}[bg];"
+        if image_bg
+        else ""
+    )
+    bg_label = "bg" if image_bg else "1:v"
     return (
+        f"{bg_chain}"
         f"[0:v]{sticker_filter(settings)}[st];"
-        f"[1:v][st]overlay=(W-w)/2:(H-h)/2:shortest=1:format=auto,"
+        f"[{bg_label}][st]overlay=(W-w)/2:(H-h)/2:shortest=1:format=auto,"
         f"format=yuv420p{watermark}[v]"
     )
 
 
-def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettings) -> None:
+def _make_bg_args(settings: RenderSettings, user_id: int, duration: float) -> tuple[list[str], bool]:
+    """Returns (ffmpeg_args, is_image_bg)"""
+    bg_path = USER_BG_IMAGES.get(user_id)
+    if bg_path and bg_path.exists():
+        return (["-loop", "1", "-i", str(bg_path)], True)
+    color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
+    return (["-f", "lavfi", "-i", color], False)
+
+
+def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettings, user_id: int) -> None:
     frames_dir = job_dir / "frames"
     node = shutil.which("node")
     if not node:
@@ -1305,7 +1332,15 @@ def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettin
     manifest = json.loads((frames_dir / "manifest.json").read_text(encoding="utf-8"))
     duration = max(0.2, min(float(manifest["duration"]), 6.0))
     frame_pattern = frames_dir / "frame_%05d.png"
-    color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
+
+    bg_path = USER_BG_IMAGES.get(user_id)
+    image_bg = bg_path is not None and bg_path.exists()
+    if image_bg:
+        bg_input = ["-loop", "1", "-i", str(bg_path)]
+    else:
+        bg_input = ["-f", "lavfi", "-i",
+                     f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"]
+
     cmd = [
         "ffmpeg",
         "-y",
@@ -1313,12 +1348,9 @@ def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettin
         str(settings.fps),
         "-i",
         str(frame_pattern),
-        "-f",
-        "lavfi",
-        "-i",
-        color,
+        *bg_input,
         "-filter_complex",
-        compose_filter(settings),
+        compose_filter(settings, image_bg=image_bg),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1326,9 +1358,9 @@ def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettin
     run_command(cmd)
 
 
-def render_webm(source: Path, output: Path, settings: RenderSettings) -> None:
+def render_webm(source: Path, output: Path, settings: RenderSettings, user_id: int) -> None:
     duration = ffprobe_duration(source) or 3.0
-    color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
+    bg_args, image_bg = _make_bg_args(settings, user_id, duration)
     cmd = [
         "ffmpeg",
         "-y",
@@ -1338,12 +1370,9 @@ def render_webm(source: Path, output: Path, settings: RenderSettings) -> None:
         f"{duration:.3f}",
         "-i",
         str(source),
-        "-f",
-        "lavfi",
-        "-i",
-        color,
+        *bg_args,
         "-filter_complex",
-        compose_filter(settings),
+        compose_filter(settings, image_bg=image_bg),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1351,9 +1380,9 @@ def render_webm(source: Path, output: Path, settings: RenderSettings) -> None:
     run_command(cmd)
 
 
-def render_video(source: Path, output: Path, settings: RenderSettings) -> None:
+def render_video(source: Path, output: Path, settings: RenderSettings, user_id: int) -> None:
     duration = ffprobe_duration(source) or 3.0
-    color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
+    bg_args, image_bg = _make_bg_args(settings, user_id, duration)
     cmd = [
         "ffmpeg",
         "-y",
@@ -1363,12 +1392,9 @@ def render_video(source: Path, output: Path, settings: RenderSettings) -> None:
         f"{duration:.3f}",
         "-i",
         str(source),
-        "-f",
-        "lavfi",
-        "-i",
-        color,
+        *bg_args,
         "-filter_complex",
-        compose_filter(settings),
+        compose_filter(settings, image_bg=image_bg),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1376,9 +1402,9 @@ def render_video(source: Path, output: Path, settings: RenderSettings) -> None:
     run_command(cmd)
 
 
-def render_image(source: Path, output: Path, settings: RenderSettings) -> None:
+def render_image(source: Path, output: Path, settings: RenderSettings, user_id: int) -> None:
     duration = max(0.5, min(settings.static_seconds, 6.0))
-    color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
+    bg_args, image_bg = _make_bg_args(settings, user_id, duration)
     cmd = [
         "ffmpeg",
         "-y",
@@ -1388,12 +1414,9 @@ def render_image(source: Path, output: Path, settings: RenderSettings) -> None:
         f"{duration:.3f}",
         "-i",
         str(source),
-        "-f",
-        "lavfi",
-        "-i",
-        color,
+        *bg_args,
         "-filter_complex",
-        compose_filter(settings),
+        compose_filter(settings, image_bg=image_bg),
         "-t",
         f"{duration:.3f}",
         *ffmpeg_common_output(output),
@@ -1401,17 +1424,17 @@ def render_image(source: Path, output: Path, settings: RenderSettings) -> None:
     run_command(cmd)
 
 
-def render_source(source: Path, job_dir: Path, settings: RenderSettings) -> Path:
+def render_source(source: Path, job_dir: Path, settings: RenderSettings, user_id: int) -> Path:
     kind = detect_kind(source)
     output = job_dir / "loop.mp4"
     if kind == "tgs":
-        render_tgs(source, output, job_dir, settings)
+        render_tgs(source, output, job_dir, settings, user_id)
     elif kind == "webm":
-        render_webm(source, output, settings)
+        render_webm(source, output, settings, user_id)
     elif kind == "image":
-        render_image(source, output, settings)
+        render_image(source, output, settings, user_id)
     elif kind == "video":
-        render_video(source, output, settings)
+        render_video(source, output, settings, user_id)
     else:
         raise RuntimeError("Unsupported sticker file format from Telegram")
 
@@ -1509,7 +1532,7 @@ async def process_source(
     try:
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_VIDEO)
         source_path = await download_source(context, source, job_dir)
-        output = await asyncio.to_thread(render_source, source_path, job_dir, settings)
+        output = await asyncio.to_thread(render_source, source_path, job_dir, settings, message.from_user.id)
         elapsed = time.time() - started
         if env_bool("LOG_RENDER_REQUESTS", True) and message.from_user:
             await log_to_owner_chat(
@@ -1899,7 +1922,7 @@ async def bg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text("Выбери фон или отправь /bg #101820", reply_markup=background_menu_keyboard())
+    await update.message.reply_text("Выбери фон или отправь /bg #101820", reply_markup=background_menu_keyboard(update.effective_user.id))
 
 
 async def on_background_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1954,11 +1977,20 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             query.message,
             f"{tg_emoji('brush', '🖌')} <b>Введи новый HEX-цвет для фона:</b>\n"
             "FFFFFF - белый\n000000 - черный",
-            background_menu_keyboard(),
+            background_menu_keyboard(user_id),
             "palette",
         )
         if shown:
             PENDING_ACTIONS[user_id] = pending_from_message("bg", shown)
+        return
+    if data == "menu:bg_upload":
+        PENDING_ACTIONS[user_id] = pending_from_message("bg_upload", query.message)
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('media', '🖼')} <b>Отправь фото для фона.</b>\n"
+            "Картинка растянется под разрешение.",
+            back_keyboard(),
+        )
         return
     if data.startswith("setbg:"):
         key = data.removeprefix("setbg:")
@@ -2102,6 +2134,32 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             main_menu_keyboard(current),
         )
         await process_source(query.message, context, source, current, actor_user_id=user_id)
+        return
+    if data == "menu:reset":
+        USER_SETTINGS.pop(user_id, None)
+        USER_SETTINGS.pop(f"{user_id}:bg_image", None)
+        current = default_settings()
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('check', '✅')} <b>Настройки сброшены к значениям по умолчанию.</b>\n\n"
+            f"{settings_summary(current)}",
+            main_menu_keyboard(current),
+        )
+        return
+    if data.startswith("setbgimg:reset"):
+        key = data.removeprefix("setbgimg:")
+        USER_SETTINGS.pop(f"{user_id}:bg_image", None)
+        current = update_settings(user_id, background_key=key if key in BACKGROUND_PRESETS else "dark")
+        if key in BACKGROUND_PRESETS:
+            _, hex_color = BACKGROUND_PRESETS[key]
+            current = update_settings(user_id, background_key=key, background_hex=hex_color)
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('check', '✅')} <b>Фон сброшен на цвет.</b>\n\n"
+            f"{settings_summary(current)}",
+            main_menu_keyboard(current),
+        )
+        return
 
 
 async def handle_pending_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -2207,10 +2265,32 @@ def media_source_from_message(message: Message) -> SourceRef | None:
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
+
+    pending = PENDING_ACTIONS.get(update.effective_user.id)
+    if pending and pending.action == "bg_upload":
+        photo = update.message.photo
+        if not photo or not photo[-1]:
+            await update.message.reply_text("Отправь именно фото (не файл, не стикер).")
+            return
+        file_id = photo[-1].file_id
+        bg_file = await context.bot.get_file(file_id)
+        bg_path = BG_DIR / f"{update.effective_user.id}.jpg"
+        BG_DIR.mkdir(parents=True, exist_ok=True)
+        await bg_file.download_to_drive(bg_path)
+        USER_BG_IMAGES[update.effective_user.id] = bg_path
+        PENDING_ACTIONS.pop(update.effective_user.id, None)
+        current = settings_for(update.effective_user.id)
+        await send_menu_message(update.message, current)
+        await update.message.reply_text("🖼 Фон загружен! Кидай стикер.")
+        source = LAST_SOURCE.get(update.effective_user.id)
+        if source:
+            await update.message.reply_text("Пересобираю последний с новым фоном.")
+            await process_source(update.message, context, source, current)
+        return
+
     source = media_source_from_message(update.message)
     if not source:
         return
-    pending = PENDING_ACTIONS.get(update.effective_user.id)
     if pending and pending.action.startswith("menu_asset") and await is_admin_user(update, context):
         await process_menu_asset(
             update.message,
