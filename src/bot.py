@@ -25,6 +25,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
     InlineQueryResultCachedVideo,
+    InputMediaPhoto,
     InputTextMessageContent,
     Message,
     Sticker,
@@ -960,6 +961,7 @@ async def _send_gradient_preview(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
     current: RenderSettings,
+    message_id: int | None = None,
 ) -> None:
     c0 = current.background_hex
     c1 = current.gradient_end_hex
@@ -989,12 +991,25 @@ async def _send_gradient_preview(
 
     preview_id = GRADIENT_PREVIEW_CACHE.get(cache_key)
     dir_label = "↕ вертикаль" if direction == "v" else "↔ горизонталь"
+    caption = f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} → {c1} ({dir_label})"
+
+    if preview_id and message_id:
+        try:
+            await context.bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=InputMediaPhoto(media=preview_id, caption=caption, parse_mode=ParseMode.HTML),
+                reply_markup=gradient_menu_keyboard(current),
+            )
+            return
+        except (BadRequest, TelegramError):
+            pass
 
     if preview_id:
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=preview_id,
-            caption=f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} → {c1} ({dir_label})",
+            caption=caption,
             reply_markup=gradient_menu_keyboard(current),
             parse_mode=ParseMode.HTML,
         )
@@ -1643,7 +1658,9 @@ async def process_source(
         return
 
     gate = get_render_gate()
+    BUSY.add(user_id)
     if not await gate.try_acquire():
+        BUSY.discard(user_id)
         await reply_ban_or_warning(
             message,
             user_id,
@@ -1662,7 +1679,7 @@ async def process_source(
     try:
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_VIDEO)
         source_path = await download_source(context, source, job_dir)
-        output = await asyncio.to_thread(render_source, source_path, job_dir, settings, message.from_user.id)
+        output = await asyncio.to_thread(render_source, source_path, job_dir, settings, user_id)
         elapsed = time.time() - started
         if env_bool("LOG_RENDER_REQUESTS", True) and message.from_user:
             await log_to_owner_chat(
@@ -2057,7 +2074,7 @@ async def bg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def on_background_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if not query or not query.from_user:
+    if not query or not query.from_user or not query.message:
         return
     await remember_user(update, context, "bg_callback")
 
@@ -2131,15 +2148,14 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if data == "menu:gradient":
         await query.message.delete()
-        await _send_gradient_preview(context, query.message.chat_id, current)
+        sent = await _send_gradient_preview(context, query.message.chat_id, current)
         return
     if data.startswith("setgradient:"):
         parts = data.removeprefix("setgradient:").split("/", 2)
         if len(parts) == 3:
             direction, c0, c1 = parts
             current = update_settings(user_id, background_key="gradient", background_hex=c0, gradient_end_hex=c1, gradient_direction=direction)
-            await query.message.delete()
-            await _send_gradient_preview(context, query.message.chat_id, current)
+            await _send_gradient_preview(context, query.message.chat_id, current, message_id=query.message.message_id)
         return
     if data == "menu:resolution":
         await edit_menu_message(
@@ -2279,7 +2295,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if data == "menu:reset":
         USER_SETTINGS.pop(user_id, None)
-        USER_SETTINGS.pop(f"{user_id}:bg_image", None)
+        USER_BG_IMAGES.pop(user_id, None)
         current = default_settings()
         await edit_menu_message(
             query.message,
@@ -2289,8 +2305,8 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
     if data.startswith("setbgimg:reset"):
-        key = data.removeprefix("setbgimg:")
-        USER_SETTINGS.pop(f"{user_id}:bg_image", None)
+        key = data.removeprefix("setbgimg:reset:")
+        USER_BG_IMAGES.pop(user_id, None)
         current = update_settings(user_id, background_key=key if key in BACKGROUND_PRESETS else "dark")
         if key in BACKGROUND_PRESETS:
             _, hex_color = BACKGROUND_PRESETS[key]
@@ -2650,31 +2666,34 @@ async def _render_inline_result(
 
     try:
         job_dir = Path(tempfile.mkdtemp(prefix="inline-", dir=RUNS_DIR))
-        source_path = await download_source(context, source, job_dir)
-        output = await asyncio.to_thread(render_source, source_path, job_dir, inline_settings, user_id)
+        try:
+            source_path = await download_source(context, source, job_dir)
+            output = await asyncio.to_thread(render_source, source_path, job_dir, inline_settings, user_id)
 
-        with output.open("rb") as f:
-            sent = await context.bot.send_video(
-                chat_id=user_id,
-                video=f,
-                supports_streaming=True,
-                disable_notification=True,
-                read_timeout=60,
-                write_timeout=60,
-            )
-        file_id = sent.video.file_id
-        await sent.delete()
+            with output.open("rb") as f:
+                sent = await context.bot.send_video(
+                    chat_id=user_id,
+                    video=f,
+                    supports_streaming=True,
+                    disable_notification=True,
+                    read_timeout=60,
+                    write_timeout=60,
+                )
+            if not sent.video or not sent.video.file_id:
+                raise RuntimeError("Video upload returned no file_id")
+            file_id = sent.video.file_id
+            await sent.delete()
 
-        shutil.rmtree(job_dir, ignore_errors=True)
-
-        return [
-            InlineQueryResultCachedVideo(
-                id=cache_key[:64],
-                video_file_id=file_id,
-                title=f"{settings.width}x{settings.height} | {source.label}",
-                description=f"{settings.background_hex} | {output_format_label(settings.output_format)}",
-            )
-        ]
+            return [
+                InlineQueryResultCachedVideo(
+                    id=cache_key[:64],
+                    video_file_id=file_id,
+                    title=f"{settings.width}x{settings.height} | {source.label}",
+                    description=f"{settings.background_hex} | {output_format_label(settings.output_format)}",
+                )
+            ]
+        finally:
+            shutil.rmtree(job_dir, ignore_errors=True)
     except Exception:
         logging.exception("Inline render failed for %s", source.label)
 
