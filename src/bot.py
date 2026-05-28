@@ -66,6 +66,17 @@ RESOLUTION_PRESETS = {
     "1920x600": (1920, 600, 30),
 }
 
+ITEM_COLOR_PRESETS = {
+    "white": ("Белый", "#ffffff"),
+    "black": ("Чёрный", "#000000"),
+    "red": ("Красный", "#e74c3c"),
+    "blue": ("Синий", "#3498db"),
+    "green": ("Зелёный", "#2ecc71"),
+    "gold": ("Золотой", "#f1c40f"),
+    "pink": ("Розовый", "#e91e90"),
+    "orange": ("Оранж", "#ff9800"),
+}
+
 
 
 @dataclass(frozen=True)
@@ -909,13 +920,27 @@ def resolution_menu_keyboard(current: RenderSettings) -> InlineKeyboardMarkup:
 
 
 
-def item_color_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [menu_button("Убрать цвет", "itemcolor:clear", "delete")],
-            [menu_button("Назад", "menu:main")],
-        ]
-    )
+def item_color_keyboard(current_hex: str | None) -> InlineKeyboardMarkup:
+    def label(key: str) -> str:
+        name, hex_color = ITEM_COLOR_PRESETS[key]
+        mark = "✓ " if current_hex == hex_color else ""
+        return f"{mark}{name}"
+
+    rows = []
+    items = list(ITEM_COLOR_PRESETS.items())
+    for index in range(0, len(items), 2):
+        rows.append(
+            [
+                menu_button(label(key), f"setcolor:{key}")
+                for key, _ in items[index:index + 2]
+            ]
+        )
+    rows.append([menu_button("Свой цвет…", "menu:item_color_custom")])
+    if current_hex:
+        rows.append([menu_button("Без цвета", "itemcolor:clear", "delete")])
+    rows.append([menu_button("Назад", "menu:main")])
+    return InlineKeyboardMarkup(rows)
+
 
 
 def notes_keyboard() -> InlineKeyboardMarkup:
@@ -1966,12 +1991,32 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
     if data == "menu:item_color":
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('brush', '🖌')} <b>Цвет перекраски emoji/sticker:</b>\n"
+            f"Сейчас: {html.escape(current.item_color_hex if current.item_color_hex else 'без перекраски')}",
+            item_color_keyboard(current.item_color_hex),
+        )
+        return
+    if data.startswith("setcolor:"):
+        key = data.removeprefix("setcolor:")
+        if key in ITEM_COLOR_PRESETS:
+            _, hex_color = ITEM_COLOR_PRESETS[key]
+            current = update_settings(user_id, item_color_hex=hex_color)
+            await edit_menu_message(
+                query.message,
+                f"{tg_emoji('brush', '🖌')} <b>Цвет перекраски emoji/sticker:</b>\n"
+                f"Сейчас: {html.escape(current.item_color_hex)}",
+                item_color_keyboard(current.item_color_hex),
+            )
+        return
+    if data == "menu:item_color_custom":
         shown = await show_section_menu_message(
             context,
             query.message,
-            f"{tg_emoji('brush', '🖌')} <b>Введи HEX-цвет, чтобы перекрасить emoji/sticker при рендере:</b>\n"
-            "FFFFFF - белый\nF2E9E4 - серый",
-            item_color_keyboard(),
+            f"{tg_emoji('brush', '🖌')} <b>Введи HEX-цвет:</b>\n"
+            "FFFFFF - белый\nF2E9E4 - серый\n\"-\" чтобы убрать",
+            InlineKeyboardMarkup([[menu_button("Назад", "menu:item_color")]]),
             "palette",
         )
         if shown:
@@ -1979,7 +2024,12 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if data == "itemcolor:clear":
         current = update_settings(user_id, item_color_hex=None)
-        await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('brush', '🖌')} <b>Цвет перекраски emoji/sticker:</b>\n"
+            f"Сейчас: без перекраски",
+            item_color_keyboard(current.item_color_hex),
+        )
         return
     if data == "menu:notes":
         PENDING_ACTIONS[user_id] = pending_from_message("notes", query.message)
@@ -2419,7 +2469,7 @@ def main() -> None:
     app.add_handler(CommandHandler("broadcast_cancel", broadcast_cancel))
     app.add_handler(CommandHandler("bg", bg))
     app.add_handler(
-        CallbackQueryHandler(on_menu_callback, pattern=r"^(menu:|fmt:|setbg:|itemcolor:|notes:|wm:)")
+        CallbackQueryHandler(on_menu_callback, pattern=r"^(menu:|fmt:|setbg:|setres:|setcolor:|itemcolor:|notes:|wm:)")
     )
     app.add_handler(CallbackQueryHandler(on_background_callback, pattern=r"^bg:"))
     app.add_handler(MessageHandler(filters.Sticker.ALL, on_sticker))
