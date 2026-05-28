@@ -10,10 +10,21 @@ Send a sticker, get back a buttery MP4 that Telegram renders as a GIF. Animated 
 [![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-22.5-2CA5E0?logo=telegram&logoColor=white)](https://github.com/python-telegram-bot/python-telegram-bot)
 [![Node](https://img.shields.io/badge/node-lottie%20render-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/lemonchikHere/telegram-sticker-loop-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/lemonchikHere/telegram-sticker-loop-bot/actions/workflows/ci.yml)
 
 </div>
 
 ---
+
+## 📸 Demo
+
+Send a sticker → get back a looping MP4.
+
+![demo](docs/demo.gif)
+
+Chat interface:
+
+![screenshot](docs/screenshot.jpeg)
 
 ## ✨ What it does
 
@@ -40,6 +51,20 @@ Output is a silent H.264 MP4 sent via `sendAnimation` — smaller and crisper th
 - **Conservative production defaults** — size caps, render timeouts, and automatic cleanup of stale temp dirs.
 
 ## 🚀 Quick start
+
+### Docker (recommended)
+
+```bash
+git clone https://github.com/lemonchikHere/telegram-sticker-loop-bot.git
+cd telegram-sticker-loop-bot
+cp .env.example .env
+#   → set BOT_TOKEN (from @BotFather)
+docker compose up
+```
+
+That's it — Chromium, ffmpeg, Node.js, and Python are all inside the container.
+
+### Manual setup
 
 **Requirements:** Python 3.12+, Node.js + npm, `ffmpeg` & `ffprobe` on `PATH`, and a local Chromium / Chrome.
 

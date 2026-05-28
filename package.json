@@ -6,7 +6,8 @@
   "scripts": {
     "bot": ".venv/bin/python src/bot.py",
     "render:lottie": "node src/render_lottie.mjs",
-    "check": ".venv/bin/python -m py_compile src/bot.py && node --check src/render_lottie.mjs"
+    "check": "python -m py_compile src/bot.py && node --check src/render_lottie.mjs",
+    "test": "python -m pytest tests/ -v"
   },
   "keywords": [],
   "author": "",
