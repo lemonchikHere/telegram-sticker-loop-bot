@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, replace
@@ -62,6 +63,20 @@ BACKGROUND_PRESETS = {
     "white": ("White", "#f8fafc"),
     "blue": ("Blue", "#0f172a"),
     "green": ("Green", "#052e2b"),
+}
+
+ASSETS_BG_DIR = ROOT / "assets" / "backgrounds"
+IMAGE_BG_PRESETS = {
+    "silver": ("☁️ Серебро", ASSETS_BG_DIR / "silver.png"),
+    "graphite": ("🌑 Графит", ASSETS_BG_DIR / "graphite.png"),
+    "steel": ("🌫️ Сталь", ASSETS_BG_DIR / "steel.png"),
+    "warm": ("🪵 Тёплый", ASSETS_BG_DIR / "warm.png"),
+    "blue": ("🔵 Синий туман", ASSETS_BG_DIR / "blue.png"),
+    "rose": ("🌸 Розовый", ASSETS_BG_DIR / "rose.png"),
+    "mint": ("🌿 Мята", ASSETS_BG_DIR / "mint.png"),
+    "lilac": ("🟣 Лиловый", ASSETS_BG_DIR / "lilac.png"),
+    "sand": ("🏜 Песок", ASSETS_BG_DIR / "sand.png"),
+    "night": ("🌑 Ночь", ASSETS_BG_DIR / "night.png"),
 }
 
 RESOLUTION_PRESETS = {
@@ -712,12 +727,9 @@ async def _composite_emoji_onto_video(
         kind = detect_kind(emoji_path)
         frames_dir = BG_DIR / f"emoji_frames_{emoji_id}"
         if kind == "tgs":
-            node = shutil.which("node")
-            if not node:
-                return False
             frames_dir.mkdir(parents=True, exist_ok=True)
             run_command([
-                node, str(ROOT / "src" / "render_lottie.mjs"),
+                sys.executable, str(ROOT / "src" / "render_lottie.py"),
                 "--input", str(emoji_path),
                 "--out-dir", str(frames_dir),
                 "--width", "128", "--height", "128",
@@ -935,6 +947,7 @@ def output_format_label(value: str) -> str:
         "gif": "GIF",
         "video": "Видео",
         "file": "Файл",
+        "sticker": "Стикер",
     }.get(value, "GIF")
 
 
@@ -1043,6 +1056,12 @@ def background_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         )
     if has_custom:
         rows.append([menu_button("🖼 Сбросить на цвет", f"setbgimg:reset:{current_settings.background_key}", "delete")])
+    preset_items = list(IMAGE_BG_PRESETS.items())
+    for _i in range(0, len(preset_items), 2):
+        rows.append([
+            menu_button(label, f"setbgimg:preset:{key}", "media")
+            for key, (label, _p) in preset_items[_i:_i + 2]
+        ])
     rows.append([menu_button("🌈 Градиент", "menu:gradient", "brush")])
     rows.append([menu_button("🖼 Загрузить свой фон", "menu:bg_upload", "media")])
     rows.append([menu_button("Назад", "menu:main")])
@@ -1168,6 +1187,9 @@ def format_menu_keyboard(current: str) -> InlineKeyboardMarkup:
                 menu_button(label("gif", "GIF"), "fmt:gif", "file"),
                 menu_button(label("video", "Видео"), "fmt:video", "media"),
                 menu_button(label("file", "Файл"), "fmt:file", "file"),
+            ],
+            [
+                menu_button(label("sticker", "🧩 Стикер"), "fmt:sticker", "media"),
             ],
             [menu_button("Назад", "menu:main")],
         ]
@@ -1582,13 +1604,9 @@ def _make_bg_args(settings: RenderSettings, user_id: int, duration: float) -> tu
 
 def render_tgs(source: Path, output: Path, job_dir: Path, settings: RenderSettings, user_id: int) -> None:
     frames_dir = job_dir / "frames"
-    node = shutil.which("node")
-    if not node:
-        raise RuntimeError("Node.js is required to render .tgs stickers")
-
     render_cmd = [
-        node,
-        str(ROOT / "src" / "render_lottie.mjs"),
+        sys.executable,
+        str(ROOT / "src" / "render_lottie.py"),
         "--input",
         str(source),
         "--out-dir",
@@ -1691,6 +1709,21 @@ def render_image(source: Path, output: Path, settings: RenderSettings, user_id: 
         *ffmpeg_common_output(output),
     ]
     run_command(cmd)
+
+
+def make_webm_sticker(mp4: Path, job_dir: Path) -> Path:
+    """Transcode the rendered loop into a Telegram video sticker:
+    WEBM/VP9, padded to 512x512, <=2.9s, 30fps, no audio, well under 256KB."""
+    webm = job_dir / "sticker.webm"
+    run_command([
+        "ffmpeg", "-y", "-i", str(mp4), "-t", "2.9",
+        "-vf",
+        "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,"
+        "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,fps=30,setsar=1",
+        "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+        "-b:v", "400k", "-an", str(webm),
+    ])
+    return webm
 
 
 def render_source(source: Path, job_dir: Path, settings: RenderSettings, user_id: int) -> Path:
@@ -1821,7 +1854,18 @@ async def process_source(
         if settings.notes:
             caption = f"{caption}\n{settings.notes[:800]}"
         with output.open("rb") as file_obj:
-            if settings.output_format == "video":
+            if settings.output_format == "sticker":
+                webm = await asyncio.to_thread(make_webm_sticker, output, output.parent)
+                with webm.open("rb") as sticker_obj:
+                    sent_message = await message.reply_sticker(
+                        sticker=sticker_obj,
+                        reply_markup=main_menu_keyboard(settings),
+                        read_timeout=60,
+                        write_timeout=120,
+                        connect_timeout=30,
+                        pool_timeout=60,
+                    )
+            elif settings.output_format == "video":
                 sent_message = await message.reply_video(
                     video=file_obj,
                     caption=caption,
@@ -2319,7 +2363,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if data.startswith("fmt:"):
         value = data.removeprefix("fmt:")
-        if value in {"gif", "video", "file"}:
+        if value in {"gif", "video", "file", "sticker"}:
             current = update_settings(user_id, output_format=value)
             await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
         return
@@ -2438,6 +2482,23 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"{settings_summary(current)}",
             main_menu_keyboard(current),
         )
+        return
+    if data.startswith("setbgimg:preset:"):
+        key = data.removeprefix("setbgimg:preset:")
+        preset = IMAGE_BG_PRESETS.get(key)
+        if not preset:
+            return
+        label, path = preset
+        USER_BG_IMAGES[user_id] = path
+        current = update_settings(user_id, background_key=f"imgpreset:{key}")
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('check', '✅')} <b>Фон:</b> {label}\n\n{settings_summary(current)}",
+            main_menu_keyboard(current),
+        )
+        source = LAST_SOURCE.get(user_id)
+        if source:
+            await process_source(query.message, context, source, current, actor_user_id=user_id)
         return
     if data.startswith("setbgimg:reset"):
         key = data.removeprefix("setbgimg:reset:")
@@ -2581,6 +2642,16 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         bg_path = BG_DIR / f"{update.effective_user.id}.jpg"
         BG_DIR.mkdir(parents=True, exist_ok=True)
         await bg_file.download_to_drive(bg_path)
+        try:
+            blur_tmp = str(bg_path) + ".blur.jpg"
+            await asyncio.to_thread(
+                run_command,
+                ["ffmpeg", "-y", "-i", str(bg_path), "-vf",
+                 "scale=720:-2:flags=lanczos,gblur=sigma=14", "-frames:v", "1", blur_tmp],
+            )
+            Path(blur_tmp).replace(bg_path)
+        except Exception:
+            pass
         USER_BG_IMAGES[update.effective_user.id] = bg_path
         PENDING_ACTIONS.pop(update.effective_user.id, None)
         current = settings_for(update.effective_user.id)
