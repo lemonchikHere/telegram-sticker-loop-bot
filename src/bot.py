@@ -2230,7 +2230,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "Бот бесплатный и с открытым кодом.\n"
             "Если хочешь поддержать — звёздочка на GitHub решает:\n"
             "github.com/lemonchikHere/telegram-sticker-loop-bot\n\n"
-            "Или напиши @lemonchikHere — ideas, баги, спасибо ❤",
+            "Или напиши @lewombats — ideas, баги, спасибо ❤",
             main_menu_keyboard(current),
         )
         return

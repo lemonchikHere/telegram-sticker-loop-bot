@@ -165,7 +165,7 @@ Bot is free and open source. If you find it useful:
 
 - **Star the repo** — helps others discover it
 - **Report bugs** — open an issue with steps to reproduce
-- **Say hi** — [@lemonchikHere](https://t.me/lemonchikHere) on Telegram
+- **Say hi** — [@lewombats](https://t.me/lewombats) on Telegram
 
 ## 📄 License
 
