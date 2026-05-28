@@ -863,7 +863,8 @@ def settings_summary(settings: RenderSettings) -> str:
         f"{tg_emoji('send', '⬆')} <b>Отправь мне:</b>\n"
         "прем emoji, custom emoji, sticker, фото/видео или ссылку на pack\n\n"
         f"{tg_emoji('settings', '⚙')} <b>Конфигурация:</b>\n"
-        f"{tg_emoji('brush', '🖌')} <b>Цвет фона:</b> {settings.background_hex}\n"
+        f"{tg_emoji('brush', '🖌')} <b>Цвет фона:</b> {settings.background_hex}"
+        f"{f' → {settings.gradient_end_hex}' if settings.gradient_end_hex else ''}\n"
         f"{tg_emoji('resolution', '↔')} <b>Разрешение:</b> {settings.width}x{settings.height} {settings.fps} FPS\n"
         f"{tg_emoji('file', '📁')} <b>Формат:</b> {output_format_label(settings.output_format)}\n"
         f"{tg_emoji('brush', '🖌')} <b>ЦветEmoji:</b> {item_color}\n"
@@ -1350,7 +1351,7 @@ def _make_bg_args(settings: RenderSettings, user_id: int, duration: float) -> tu
             f"b='b({axis},Y)+floor({dr_b}*{axis}/{dim})'"
         )
         color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
-        return (["-f", "lavfi", "-i", color], False, f",{geq}")
+        return (["-f", "lavfi", "-i", color], False, geq)
 
     color = f"color=c={settings.background_hex}:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"
     return (["-f", "lavfi", "-i", color], False, "")
@@ -2055,10 +2056,12 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         parts = data.removeprefix("setgradient:").split("/", 2)
         if len(parts) == 3:
             direction, c0, c1 = parts
+            dir_label = "↕" if direction == "v" else "↔"
             current = update_settings(user_id, background_key="gradient", background_hex=c0, gradient_end_hex=c1, gradient_direction=direction)
             await edit_menu_message(
                 query.message,
-                f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>\n✓ {c0} → {c1}",
+                f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} {dir_label} {c1}\n\n"
+                f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>",
                 gradient_menu_keyboard(current),
             )
         return
@@ -2426,6 +2429,7 @@ async def on_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             menu_asset_section_from_action(pending.action),
         )
         return
+    PENDING_ACTIONS.pop(update.effective_user.id, None)
     await remember_user(
         update,
         context,
