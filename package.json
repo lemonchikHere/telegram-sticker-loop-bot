@@ -1,0 +1,19 @@
+{
+  "name": "telegram-sticker-loop-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that turns stickers and custom emoji into looping GIF-style MP4 animations.",
+  "main": "src/render_lottie.mjs",
+  "scripts": {
+    "bot": ".venv/bin/python src/bot.py",
+    "render:lottie": "node src/render_lottie.mjs",
+    "check": ".venv/bin/python -m py_compile src/bot.py && node --check src/render_lottie.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "lottie-web": "^5.13.0",
+    "playwright-core": "^1.60.0"
+  }
+}
