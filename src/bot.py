@@ -674,52 +674,32 @@ def menu_asset_for(section: str | None = None) -> str | None:
     return None
 
 
-async def _generate_section_preview_video(
-    label: str, watermark: str, emoji_id: str | None, output: Path, app: Application
-) -> bool:
-    lines = label.split("\n")
-    main_text = lines[0]
-    sub_text = lines[1] if len(lines) > 1 else ""
-
-    text_file = output.with_suffix(".txt")
+async def _generate_section_bg_video(watermark: str, output: Path) -> bool:
     wm_file = output.with_suffix(".wm.txt")
-    sub_file = output.with_suffix(".sub.txt")
-    text_file.write_text(main_text, encoding="utf-8")
     wm_file.write_text(watermark, encoding="utf-8")
-
-    vf_parts = [
-        f"drawtext=textfile='{text_file}':fontcolor=white:fontsize=28:x=(w-tw)/2:y=(h/2)-20",
-    ]
-    if sub_text:
-        sub_file.write_text(sub_text, encoding="utf-8")
-        vf_parts.append(f"drawtext=textfile='{sub_file}':fontcolor=gray@0.6:fontsize=18:x=(w-tw)/2:y=(h/2)+30")
-    vf_parts.append(f"drawtext=textfile='{wm_file}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10")
-    vf_parts.append("fade=in:0:10")
-
     try:
         run_command([
             "ffmpeg", "-y",
             "-f", "lavfi", "-i",
             f"color=c=black:s=512x288:r=5:d=1.5",
-            "-vf", ",".join(vf_parts),
+            "-vf",
+            f"drawtext=textfile='{wm_file}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-t", "1.5",
             str(output),
         ], cwd=ROOT)
         return True
     except Exception:
-        logging.exception("Failed to generate section preview for %s", label)
+        logging.exception("Failed to generate bg video")
         return False
     finally:
-        for f in (text_file, wm_file, sub_file):
-            if f.exists():
-                f.unlink(missing_ok=True)
+        if wm_file.exists():
+            wm_file.unlink(missing_ok=True)
 
 
 async def _composite_emoji_onto_video(
     app: Application, emoji_id: str, bg_video: Path, output: Path,
 ) -> bool:
-    """Overlay premium emoji sticker onto the section preview video."""
     try:
         stickers = await app.bot.get_custom_emoji_stickers([emoji_id])
         if not stickers:
@@ -750,8 +730,8 @@ async def _composite_emoji_onto_video(
                 "-framerate", "5",
                 "-i", str(frame_pattern),
                 "-filter_complex",
-                f"[1:v]scale=100:100:force_original_aspect_ratio=decrease[emoji];"
-                f"[0:v][emoji]overlay=(W-w)/2:(H/2)-120:shortest=1",
+                f"[1:v]scale=128:128:force_original_aspect_ratio=decrease[emoji];"
+                f"[0:v][emoji]overlay=(W-w)/2:(H-h)/2:shortest=1",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-t", "1.5",
                 str(output),
@@ -785,7 +765,7 @@ async def _auto_generate_menu_assets(app: Application) -> None:
             preview_path = BG_DIR / f"section_{section}.mp4"
             final_path = BG_DIR / f"section_{section}_final.mp4"
             BG_DIR.mkdir(parents=True, exist_ok=True)
-            if not await _generate_section_preview_video(label, wm, None, preview_path, app):
+            if not await _generate_section_bg_video(wm, preview_path):
                 continue
 
             emoji_id = PREMIUM_EMOJI.get(emoji_key)
