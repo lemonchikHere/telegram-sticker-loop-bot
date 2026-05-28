@@ -893,6 +893,7 @@ def main_menu_keyboard(settings: RenderSettings) -> InlineKeyboardMarkup:
             ],
             [
                 menu_button("Сбросить всё", "menu:reset", "delete"),
+                menu_button("⭐ Поддержать", "menu:support", "bot"),
             ],
         ]
     )
@@ -2219,6 +2220,17 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             query.message,
             f"{tg_emoji('check', '✅')} <b>Фон сброшен на цвет.</b>\n\n"
             f"{settings_summary(current)}",
+            main_menu_keyboard(current),
+        )
+        return
+    if data == "menu:support":
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('bot', '⭐')} <b>Поддержать разработчика</b>\n\n"
+            "Бот бесплатный и с открытым кодом.\n"
+            "Если хочешь поддержать — звёздочка на GitHub решает:\n"
+            "github.com/lemonchikHere/telegram-sticker-loop-bot\n\n"
+            "Или напиши @lemonchikHere — ideas, баги, спасибо ❤",
             main_menu_keyboard(current),
         )
         return

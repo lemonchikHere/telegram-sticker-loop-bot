@@ -1,3 +1,7 @@
 python-telegram-bot==22.5
+# All other imports are stdlib (asyncio, sqlite3, subprocess, etc.)
+# The bot's load_dotenv is self-implemented — no python-dotenv needed.
+
+# dev
 pytest==8.4.2
 
