@@ -693,12 +693,19 @@ async def _generate_section_bg_video(watermark: str, output: Path) -> bool:
     wm_file = output.with_suffix(".wm.txt")
     wm_file.write_text(watermark, encoding="utf-8")
     try:
+        silver = ASSETS_BG_DIR / "silver.png"
+        if silver.exists():
+            bg_in = ["-loop", "1", "-i", str(silver)]
+            scale = "scale=512:288,"
+        else:
+            bg_in = ["-f", "lavfi", "-i", "color=c=black:s=512x288:r=5:d=1.5"]
+            scale = ""
         run_command([
             "ffmpeg", "-y",
-            "-f", "lavfi", "-i",
-            f"color=c=black:s=512x288:r=5:d=1.5",
+            *bg_in,
             "-vf",
-            f"drawtext=textfile='{wm_file}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10",
+            f"{scale}drawtext=textfile='{wm_file}':fontcolor=white@0.25:fontsize=13:x=w-tw-10:y=h-th-10",
+            "-r", "5",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-t", "1.5",
             str(output),
@@ -798,6 +805,20 @@ async def _auto_generate_menu_assets(app: Application) -> None:
                 await sent.delete()
             except TelegramError:
                 logging.exception("Failed to upload section preview for %s", section)
+        if not MENU_ASSETS:
+            welcome = ASSETS_BG_DIR / "welcome.mp4"
+            if welcome.exists():
+                chat_id = target_chat or next(iter(admin_ids))
+                try:
+                    with welcome.open("rb") as f:
+                        sent = await app.bot.send_video(
+                            chat_id=chat_id, video=f, disable_notification=True,
+                        )
+                    if sent.video and sent.video.file_id:
+                        add_menu_asset(sent.video.file_id, "main")
+                    await sent.delete()
+                except TelegramError:
+                    logging.exception("Failed to upload welcome menu asset")
         save_menu_assets()
         logging.info("Auto-generated menu section previews complete")
     except Exception:
