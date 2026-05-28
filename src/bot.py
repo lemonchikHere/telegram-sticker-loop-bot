@@ -924,6 +924,86 @@ def background_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+GRADIENT_PREVIEW_CACHE: dict[str, str] = {}
+
+
+def _render_gradient_preview(c0_hex: str, c1_hex: str, direction: str, output: Path) -> bool:
+    w, h = (640, 60)
+    c0 = c0_hex.lstrip("#")
+    c1 = c1_hex.lstrip("#")
+    dr_r = int(c1[0:2], 16) - int(c0[0:2], 16)
+    dr_g = int(c1[2:4], 16) - int(c0[2:4], 16)
+    dr_b = int(c1[4:6], 16) - int(c0[4:6], 16)
+    axis = "Y" if direction == "v" else "X"
+    dim = "H" if direction == "v" else "W"
+    geq = (
+        f"geq=r='r({axis},Y)+floor({dr_r}*{axis}/{dim})':"
+        f"g='g({axis},Y)+floor({dr_g}*{axis}/{dim})':"
+        f"b='b({axis},Y)+floor({dr_b}*{axis}/{dim})'"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c={c0_hex}:s={w}x{h}:r=1:d=0.1",
+        "-vf", geq,
+        "-frames:v", "1",
+        "-c:v", "mjpeg",
+        str(output),
+    ]
+    try:
+        run_command(cmd, cwd=ROOT)
+        return True
+    except Exception:
+        return False
+
+
+async def _send_gradient_preview(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    current: RenderSettings,
+) -> None:
+    c0 = current.background_hex
+    c1 = current.gradient_end_hex
+    direction = current.gradient_direction or "h"
+    cache_key = f"{c0}/{c1}/{direction}"
+
+    if cache_key not in GRADIENT_PREVIEW_CACHE:
+        preview_path = BG_DIR / f"gp_{abs(hash(cache_key))}.jpg"
+        BG_DIR.mkdir(parents=True, exist_ok=True)
+        if _render_gradient_preview(c0, c1, direction, preview_path):
+            try:
+                sent = await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=preview_path.open("rb"),
+                    disable_notification=True,
+                )
+                p = sent.photo
+                if p and p[-1]:
+                    GRADIENT_PREVIEW_CACHE[cache_key] = p[-1].file_id
+                await sent.delete()
+            except TelegramError:
+                pass
+
+    preview_id = GRADIENT_PREVIEW_CACHE.get(cache_key)
+    dir_label = "↕ вертикаль" if direction == "v" else "↔ горизонталь"
+
+    if preview_id:
+        await context.bot.send_animation(
+            chat_id=chat_id,
+            animation=preview_id,
+            caption=f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} → {c1} ({dir_label})",
+            reply_markup=gradient_menu_keyboard(current),
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} → {c1} ({dir_label})\n\n"
+                 f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>",
+            reply_markup=gradient_menu_keyboard(current),
+            parse_mode=ParseMode.HTML,
+        )
+
+
 def gradient_menu_keyboard(current: RenderSettings) -> InlineKeyboardMarkup:
     dir_label = {"h": "↔ горизонталь", "v": "↕ вертикаль"}
     rows = []
@@ -2046,24 +2126,16 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await edit_menu_message(query.message, settings_summary(current), main_menu_keyboard(current))
         return
     if data == "menu:gradient":
-        await edit_menu_message(
-            query.message,
-            f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>",
-            gradient_menu_keyboard(current),
-        )
+        await query.message.delete()
+        await _send_gradient_preview(context, query.message.chat_id, current)
         return
     if data.startswith("setgradient:"):
         parts = data.removeprefix("setgradient:").split("/", 2)
         if len(parts) == 3:
             direction, c0, c1 = parts
-            dir_label = "↕" if direction == "v" else "↔"
             current = update_settings(user_id, background_key="gradient", background_hex=c0, gradient_end_hex=c1, gradient_direction=direction)
-            await edit_menu_message(
-                query.message,
-                f"{tg_emoji('brush', '🎨')} <b>Градиент:</b> {c0} {dir_label} {c1}\n\n"
-                f"{tg_emoji('brush', '🎨')} <b>Выбери градиент:</b>",
-                gradient_menu_keyboard(current),
-            )
+            await query.message.delete()
+            await _send_gradient_preview(context, query.message.chat_id, current)
         return
     if data == "menu:resolution":
         await edit_menu_message(
