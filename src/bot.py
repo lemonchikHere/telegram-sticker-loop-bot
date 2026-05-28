@@ -834,6 +834,17 @@ def add_menu_asset(file_id: str, section: str = "main") -> None:
     save_menu_assets()
 
 
+def set_menu_asset(file_id: str, section: str = "main") -> None:
+    """Replace a section's preview with a single asset (the latest render)."""
+    section = normalize_menu_asset_section(section)
+    if section == "main":
+        MENU_ASSETS.clear()
+        MENU_ASSETS.append(file_id)
+    else:
+        MENU_SECTION_ASSETS[section] = [file_id]
+    save_menu_assets()
+
+
 def menu_asset_action(section: str = "main") -> str:
     return f"menu_asset:{normalize_menu_asset_section(section)}"
 
@@ -1061,6 +1072,17 @@ def main_menu_keyboard(settings: RenderSettings) -> InlineKeyboardMarkup:
 
 def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[menu_button("Назад", "menu:main")]])
+
+
+def menu_asset_sections_keyboard() -> InlineKeyboardMarkup:
+    items = list(MENU_ASSET_SECTIONS.items())
+    rows = []
+    for i in range(0, len(items), 2):
+        rows.append([
+            InlineKeyboardButton(lbl.capitalize(), callback_data=f"pickasset:{key}")
+            for key, lbl in items[i:i + 2]
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def background_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -2014,8 +2036,17 @@ async def start_menu_asset_mode(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def menu_assets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    raw_section = context.args[0] if context.args else "main"
-    await start_menu_asset_mode(update, context, raw_section)
+    if context.args:
+        await start_menu_asset_mode(update, context, context.args[0])
+        return
+    if not update.message or not await require_admin(update, context):
+        return
+    await update.message.reply_text(
+        f"{tg_emoji('media', '🖼')} <b>Превью разделов меню</b>\n"
+        "Выбери раздел — потом кинь эмодзи/стикер, и результат рендера встанет превью этого раздела.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=menu_asset_sections_keyboard(),
+    )
 
 
 async def menu_asset_palette_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2521,6 +2552,20 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if source:
             await process_source(query.message, context, source, current, actor_user_id=user_id)
         return
+    if data.startswith("pickasset:"):
+        if not await is_admin_user(update, context):
+            return
+        section = normalize_menu_asset_section(data.split(":", 1)[1])
+        label = menu_asset_section_label(section)
+        await edit_menu_message(
+            query.message,
+            f"{tg_emoji('media', '🖼')} <b>Раздел: {html.escape(label)}</b>\n"
+            "Кинь sticker / premium-emoji / фото / видео — отрендерю и поставлю превью этого раздела.\n"
+            f"Сейчас: {menu_asset_count(section)}",
+            back_keyboard(),
+        )
+        PENDING_ACTIONS[user_id] = pending_from_message(menu_asset_action(section), query.message)
+        return
     if data.startswith("setbgimg:reset"):
         key = data.removeprefix("setbgimg:reset:")
         USER_BG_IMAGES.pop(user_id, None)
@@ -2727,10 +2772,10 @@ async def process_menu_asset(
     )
     sent = await process_source(message, context, source, settings, actor_user_id=user_id, charge_rate=False)
     if sent and sent.animation:
-        await asyncio.to_thread(add_menu_asset, sent.animation.file_id, section)
+        await asyncio.to_thread(set_menu_asset, sent.animation.file_id, section)
         await message.reply_text(
-            f"Добавил GIF в раздел: {menu_asset_section_label(section)}. Всего: {menu_asset_count(section)}\n"
-            "Кидай следующий или отправь '-' чтобы закончить.",
+            f"✅ Превью раздела «{menu_asset_section_label(section)}» обновлено.\n"
+            "Кинь другой эмодзи чтобы заменить, или '-' чтобы закончить.",
         )
 
 
@@ -3058,7 +3103,7 @@ def main() -> None:
     app.add_handler(CommandHandler("broadcast_cancel", broadcast_cancel))
     app.add_handler(CommandHandler("bg", bg))
     app.add_handler(
-        CallbackQueryHandler(on_menu_callback, pattern=r"^(menu:|fmt:|setbg:|setres:|setcolor:|setgradient:|itemcolor:|notes:|wm:|setbgimg:|res:)")
+        CallbackQueryHandler(on_menu_callback, pattern=r"^(menu:|fmt:|setbg:|setres:|setcolor:|setgradient:|itemcolor:|notes:|wm:|setbgimg:|pickasset:|res:)")
     )
     app.add_handler(CallbackQueryHandler(on_background_callback, pattern=r"^bg:"))
     app.add_handler(MessageHandler(filters.Sticker.ALL, on_sticker))
