@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-liberation \
     fonts-noto-color-emoji \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -28,5 +29,8 @@ RUN npm ci --omit=dev
 COPY src/ ./src/
 
 RUN mkdir -p /app/var /app/logs
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD pgrep -f "python src/bot.py" || exit 1
 
 CMD ["python", "src/bot.py"]
