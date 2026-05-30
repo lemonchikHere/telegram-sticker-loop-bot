@@ -1,6 +1,6 @@
 {
   "name": "telegram-sticker-loop-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Telegram bot that turns stickers and custom emoji into looping GIF/MP4/sticker animations (rlottie renderer).",
   "main": "src/render_lottie.mjs",
   "scripts": {
